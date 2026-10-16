@@ -52,6 +52,11 @@ struct Host {
     locks: Option<WebLocks>,
     /// Graphics restarts so far.
     restarts: u32,
+    /// Embedded with `?bridge`: the estudio bridge (started with the first runner, kept across
+    /// graphics restarts) and the files the app would have downloaded.
+    bridged: bool,
+    bridge: Rc<RefCell<Option<crate::bridge::Bridge>>>,
+    downloads: crate::bridge::Downloads,
 }
 
 pub fn start() {
@@ -75,6 +80,9 @@ pub fn start() {
             pasted: Rc::default(),
             locks,
             restarts: 0,
+            bridged: crate::bridge::wanted(&query()),
+            bridge: Rc::default(),
+            downloads: Arc::default(),
         };
         track_paste(&host.pasted);
         run(host, canvas, None).await;
@@ -111,7 +119,8 @@ async fn run(host: Host, canvas: web_sys::HtmlCanvasElement, moving: Option<Movi
                     rs.device.set_device_lost_callback(move |reason, msg| loss.report(&ctx, format!("{reason:?}: {msg}")));
                 }
                 host.pasted.borrow_mut().ctx = Some(ctx.clone());
-                let services = services(host.inbox.clone(), host.place_inbox.clone(), ctx.clone(), host.locks.clone());
+                let downloads = host.bridged.then(|| host.downloads.clone());
+                let services = services(host.inbox.clone(), host.place_inbox.clone(), ctx.clone(), host.locks.clone(), downloads);
                 let app = match taken.borrow_mut().take() {
                     Some(mut app) => {
                         // The old services asked the old context for frames.
@@ -119,7 +128,16 @@ async fn run(host: Host, canvas: web_sys::HtmlCanvasElement, moving: Option<Movi
                         app.status("The graphics were lost and have been restarted");
                         app
                     }
-                    None => VectorcraftApp::new(Session::new(), services),
+                    None => {
+                        let app = VectorcraftApp::new(Session::new(), services);
+                        if host.bridged {
+                            let (tx, rx) = std::sync::mpsc::channel();
+                            *host.bridge.borrow_mut() = crate::bridge::Bridge::start(host.inbox.clone(), host.downloads.clone(), tx, ctx.clone());
+                            app.with_control(rx)
+                        } else {
+                            app
+                        }
+                    }
                 };
                 Ok(Box::new(WebShell { app: Some(app), host, canvas: page, loss }))
             }),
@@ -377,6 +395,9 @@ impl eframe::App for WebShell {
                 });
             }
         }
+        if let Some(bridge) = self.host.bridge.borrow_mut().as_mut() {
+            bridge.tick(app);
+        }
         app.logic(ctx);
     }
 
@@ -393,7 +414,7 @@ impl eframe::App for WebShell {
     }
 }
 
-fn services(inbox: Inbox, place_inbox: PlaceInbox, ctx: egui::Context, locks: Option<WebLocks>) -> Services {
+fn services(inbox: Inbox, place_inbox: PlaceInbox, ctx: egui::Context, locks: Option<WebLocks>, bridged: Option<crate::bridge::Downloads>) -> Services {
     let open_inbox = inbox.clone();
     let picked = place_inbox.clone();
     let place_ctx = ctx.clone();
@@ -434,8 +455,15 @@ fn services(inbox: Inbox, place_inbox: PlaceInbox, ctx: egui::Context, locks: Op
                 ctx.request_repaint();
             });
         })),
-        // A download that couldn't be started fails the save or export it is for (#1693).
-        download: Some(Box::new(|name: &str, bytes: &[u8]| download(name, bytes).inspect_err(|e| log::error!("download of {name} failed: {e}")))),
+        // A download that couldn't be started fails the save or export it is for (#1693). Embedded
+        // (the estudio bridge), the file goes to the page instead.
+        download: Some(match bridged {
+            Some(to_page) => Box::new(move |name: &str, bytes: &[u8]| {
+                to_page.lock().unwrap_or_else(|e| e.into_inner()).push((name.to_string(), bytes.to_vec()));
+                Ok(())
+            }) as vectorcraft_ui_egui::DownloadFn,
+            None => Box::new(|name: &str, bytes: &[u8]| download(name, bytes).inspect_err(|e| log::error!("download of {name} failed: {e}"))),
+        }),
         inbox: Some(inbox),
         recovery_store: Some(Arc::new(BrowserStore { locks })),
         // File → Print: the browser's print dialog.

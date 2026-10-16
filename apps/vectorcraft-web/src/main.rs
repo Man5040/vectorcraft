@@ -12,8 +12,11 @@
 //! - dropped files are read asynchronously by `web::WebShell` and delivered through the inbox.
 //!
 //! URL query flags: `?webgl` forces the WebGL2 backend instead of WebGPU; `?lang=es` (any
-//! language code) stands in for the browser's languages when the interface language is Automatic.
+//! language code) stands in for the browser's languages when the interface language is Automatic;
+//! `?bridge` (inside a frame) talks to the embedding page, see `bridge.rs`.
 
+#[cfg(target_arch = "wasm32")]
+mod bridge;
 #[cfg(target_arch = "wasm32")]
 mod fonts;
 #[cfg(target_arch = "wasm32")]

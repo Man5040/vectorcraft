@@ -326,6 +326,10 @@ pub struct UiState {
     /// Presentation Mode came back on restart with no way out).
     #[serde(skip)]
     pub screen_mode: u8,
+    /// Embedded by a page that draws its own interface around the canvas (the web build's estudio
+    /// bridge): the document tabs hide too. Not saved.
+    #[serde(skip)]
+    pub embedded: bool,
     /// Draw Normal / Behind / Inside.
     pub draw_mode: u8,
     pub about: bool,
@@ -697,6 +701,7 @@ impl Default for UiState {
             palette_open: false,
             palette_query: String::new(),
             screen_mode: 0,
+            embedded: false,
             draw_mode: 0,
             about: false,
             action_sets: crate::panels::actions::default_sets(),
