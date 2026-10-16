@@ -12,7 +12,9 @@
 //!   `document.inspect`, `ui.set`, `ui.render`…); the answer comes back as `reply {id, result}`.
 //!   Saving is `engine.execute {command: "document.serialize"}`: the bytes come back in the reply;
 //! - `{type: "embed", bare}`: with `bare`, only the canvas shows (no menus, tools, panels, status
-//!   bar or document tabs): estudio draws its own around it.
+//!   bar or document tabs): estudio draws its own around it;
+//! - `{type: "font", id, bytes}`: a font file (TTF/OTF) for the text engine, before documents that
+//!   use it open (estudio's brand fonts); answered `reply {id, result: {ok, faces}}`.
 //!
 //! To the embedding page:
 //! - `{type: "ready", version}` once the app runs;
@@ -36,6 +38,7 @@ pub type Downloads = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
 enum Incoming {
     Control(wasm_bindgen::JsValue, String, serde_json::Value),
     Embed(bool),
+    Font(wasm_bindgen::JsValue, Vec<u8>),
 }
 
 pub struct Bridge {
@@ -93,6 +96,10 @@ impl Bridge {
                     let bare = get(&data, "bare").as_bool().unwrap_or(true);
                     queue.lock().unwrap_or_else(|e| e.into_inner()).push(Incoming::Embed(bare));
                 }
+                "font" => {
+                    let bytes = js_sys::Uint8Array::new(&get(&data, "bytes")).to_vec();
+                    queue.lock().unwrap_or_else(|e| e.into_inner()).push(Incoming::Font(get(&data, "id"), bytes));
+                }
                 _ => return,
             }
             ctx.request_repaint();
@@ -145,6 +152,11 @@ impl Bridge {
                     }
                 }
                 Incoming::Embed(bare) => Self::embed(app, bare),
+                Incoming::Font(id, bytes) => {
+                    let faces = vectorcraft_text::FontDb::global().add_font(bytes);
+                    let result = serde_json::json!({"ok": faces > 0, "faces": faces});
+                    self.post(&[("type", "reply".into()), ("id", id), ("result", Self::json(&result))]);
+                }
             }
         }
         let downloads = std::mem::take(&mut *self.downloads.lock().unwrap_or_else(|e| e.into_inner()));
